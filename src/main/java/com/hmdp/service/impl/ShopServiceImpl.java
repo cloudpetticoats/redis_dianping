@@ -1,6 +1,7 @@
 package com.hmdp.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.util.BooleanUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
 import com.hmdp.dto.Result;
@@ -34,16 +35,64 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
     @Override
     public Result queryById(Long id) {
+        // 解决缓存穿透
+        // Shop shop = queryWithPassThrough(id);
+
+        // 解决缓存击穿
+        Shop shop = queryWithMutex(id);
+
+        return Result.ok(shop);
+    }
+
+    private Shop queryWithMutex(Long id) {
         // 从redis中查数据
         String shopJson = stringRedisTemplate.opsForValue().get(CACHE_SHOP_KEY + id);
         if (StrUtil.isNotBlank(shopJson)) {
-            Shop shop = BeanUtil.toBean(shopJson, Shop.class);
-            return Result.ok(shop);
+            return BeanUtil.toBean(shopJson, Shop.class);
+        }
+        // 判断命中的是否为空值
+        if(shopJson != null) {
+            return null;
+        }
+
+        Shop shop = null;
+        try {
+            // 加锁
+            Boolean b = tryLock(LOCK_SHOP_KEY + id);
+            if(!b) {
+                Thread.sleep(50);
+                return queryWithMutex(id);
+            }
+
+            // 从数据库中查数据
+            shop = getById(id);
+            if(shop == null) {
+                // 保存空值，使用 缓存空对象 的方法解决缓存穿透
+                stringRedisTemplate.opsForValue().set(CACHE_SHOP_KEY + id, "", CACHE_NULL_TTL, TimeUnit.MINUTES);
+                return null;
+            }
+            // 保存到redis, 并设置过期时间为30min
+            stringRedisTemplate.opsForValue().set(CACHE_SHOP_KEY + id, JSONUtil.toJsonStr(shop), CACHE_SHOP_TTL, TimeUnit.MINUTES);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        } finally {
+            // 释放锁
+            unlock(LOCK_SHOP_KEY + id);
+        }
+
+        return shop;
+    }
+
+    private Shop queryWithPassThrough(Long id) {
+        // 从redis中查数据
+        String shopJson = stringRedisTemplate.opsForValue().get(CACHE_SHOP_KEY + id);
+        if (StrUtil.isNotBlank(shopJson)) {
+            return BeanUtil.toBean(shopJson, Shop.class);
         }
 
         // 判断命中的是否为空值
         if(shopJson != null) {
-            return Result.fail("信息不存在");
+            return null;
         }
 
         // 从数据库中查数据
@@ -51,12 +100,11 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         if(shop == null) {
             // 保存空值，使用 缓存空对象 的方法解决缓存穿透
             stringRedisTemplate.opsForValue().set(CACHE_SHOP_KEY + id, "", CACHE_NULL_TTL, TimeUnit.MINUTES);
-
-            return Result.fail("店铺不存在");
+            return null;
         }
         // 保存到redis, 并设置过期时间为30min
         stringRedisTemplate.opsForValue().set(CACHE_SHOP_KEY + id, JSONUtil.toJsonStr(shop), CACHE_SHOP_TTL, TimeUnit.MINUTES);
-        return Result.ok(shop);
+        return shop;
     }
 
     @Override
@@ -71,5 +119,14 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         // 删除缓存
         stringRedisTemplate.delete(CACHE_SHOP_KEY + id);
         return  Result.ok();
+    }
+
+    private Boolean tryLock(String key) {
+        Boolean b = stringRedisTemplate.opsForValue().setIfAbsent(key, "1", 10, TimeUnit.SECONDS);
+        return BooleanUtil.isTrue(b);
+    }
+
+    private void unlock(String key) {
+        stringRedisTemplate.delete(key);
     }
 }
