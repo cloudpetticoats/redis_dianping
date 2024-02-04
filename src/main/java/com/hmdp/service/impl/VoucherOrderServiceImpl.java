@@ -50,7 +50,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
         // 扣减库存
         boolean isSuccess = iSeckillVoucherService.update().
-                setSql("stock = stock - 1").eq("voucher_id", voucherId).update();
+                setSql("stock = stock - 1").eq("voucher_id", voucherId)
+                .gt("stock", 0)    // 添加乐观锁, 原始的乐观锁是 = stack，但那样会造成失败率太高，
+                                             // 故而只让其判断在自己修改的时候stack是否大于0
+                .update();
         if (!isSuccess) {
             return Result.fail("库存不足！");
         }
