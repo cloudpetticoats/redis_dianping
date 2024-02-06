@@ -20,8 +20,8 @@ import java.util.List;
  * 前端控制器
  * </p>
  *
- * @author 虎哥
- * @since 2021-12-22
+ * @author Zhang Haishuo
+ * @since 2024-2-6
  */
 @RestController
 @RequestMapping("/blog")
@@ -79,5 +79,10 @@ public class BlogController {
             blog.setIcon(user.getIcon());
         });
         return Result.ok(records);
+    }
+
+    @GetMapping("/{id}")
+    public Result queryBlogById(@PathVariable("id") Long id) {
+        return blogService.queryBlogById(id);
     }
 }
