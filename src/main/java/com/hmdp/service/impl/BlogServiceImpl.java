@@ -1,9 +1,10 @@
 package com.hmdp.service.impl;
 
-import cn.hutool.core.util.BooleanUtil;
-import com.baomidou.mybatisplus.extension.conditions.update.UpdateChainWrapper;
+import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hmdp.dto.Result;
+import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.Blog;
 import com.hmdp.entity.User;
 import com.hmdp.mapper.BlogMapper;
@@ -12,11 +13,16 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.SystemConstants;
 import com.hmdp.utils.UserHolder;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * <p>
@@ -27,6 +33,7 @@ import java.util.List;
  * @since 2024-2-6
  */
 @Service
+@Slf4j
 public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IBlogService {
 
     @Resource
@@ -70,30 +77,57 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
     }
 
     @Override
+    public Result queryBlogLikes(Long id) {
+        String key = "blog:liked:" + id;
+
+        // 查top5
+        Set<String> top5 = stringRedisTemplate.opsForZSet().range(key, 0, 4);
+        if (top5 == null || top5.isEmpty()) {
+            return Result.ok(Collections.emptyList());
+        }
+        List<Long> ids = top5.stream().map(Long::valueOf).collect(Collectors.toList());
+        String idsStr = StrUtil.join(",", ids);
+
+        // 查出top5之后查数据库的时候要根据order by field(id, " + idsStr +") 这个sql语句来限制。否则在数据库中就按照递增顺序排列结果了
+        List<User> users = iUserService.query()
+                .in("id", ids).last("order by field(id, " + idsStr +")").list();
+        List<UserDTO> collect = users.stream()
+                .map(user -> BeanUtil.copyProperties(user, UserDTO.class))
+                .collect(Collectors.toList());
+
+        return Result.ok(collect);
+    }
+
+    @Override
     public Result likeBlog(Long id) {
         Long userId = UserHolder.getUser().getId();
 
-        String key = "blog:liked:" + userId;
-        Boolean isMember = stringRedisTemplate.opsForSet().isMember(key, userId.toString());
+        String key = "blog:liked:" + id;
+        Double score = stringRedisTemplate.opsForZSet().score(key, userId.toString());
 
-        if(BooleanUtil.isFalse(isMember)) {
+        if(score == null) {
             boolean isSuccess = update().setSql("liked = liked + 1").eq("id", id).update();
             if(isSuccess) {
-                stringRedisTemplate.opsForSet().add(key, userId.toString());
+                stringRedisTemplate.opsForZSet().add(key, userId.toString(), System.currentTimeMillis());
             }
         } else {
             boolean isSuccess = update().setSql("liked = liked - 1").eq("id", id).update();
             if(isSuccess) {
-                stringRedisTemplate.opsForSet().remove(key, userId.toString());
+                stringRedisTemplate.opsForZSet().remove(key, userId.toString());
             }
         }
         return Result.ok();
     }
 
     private void isBlogLike(Blog blog) {
-        Long userId = UserHolder.getUser().getId();
+        UserDTO user = UserHolder.getUser();
+        if (user == null) {
+            // 用户未登录，无需查询是否点赞
+            return;
+        }
+        Long userId = user.getId();
         String key = "blog:liked:" + userId;
-        Boolean isMember = stringRedisTemplate.opsForSet().isMember(key, userId.toString());
-        blog.setIsLike(BooleanUtil.isTrue(isMember));
+        Double score = stringRedisTemplate.opsForZSet().score(key, userId.toString());
+        blog.setIsLike(score != null);
     }
 }
