@@ -4,6 +4,7 @@ import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hmdp.dto.Result;
+import com.hmdp.dto.ScrollResult;
 import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.Blog;
 import com.hmdp.entity.Follow;
@@ -17,9 +18,11 @@ import com.hmdp.utils.SystemConstants;
 import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
@@ -120,6 +123,54 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         }
 
         return Result.ok(blog.getId());
+    }
+
+    @Override
+    public Result queryBlogOfFollow(Long max, Integer offset) {
+        Long userId = UserHolder.getUser().getId();
+
+        String key = "feed:" + userId;
+        // 分页查询，根据score查询
+        Set<ZSetOperations.TypedTuple<String>> typedTuples =
+                stringRedisTemplate.opsForZSet().reverseRangeByScoreWithScores(key, 0, max, offset, 2);
+        if (typedTuples == null || typedTuples.isEmpty()) {
+            return Result.ok();
+        }
+
+        // 解析数据，获取minScore、offset等返回值
+        List<Long> ids = new ArrayList<>(typedTuples.size());
+        Long minScore = 0L;
+        int os = 1;
+        for (ZSetOperations.TypedTuple<String> typedTuple : typedTuples) {
+            ids.add(Long.valueOf(typedTuple.getValue()));
+
+            long score = typedTuple.getScore().longValue();
+            if (score == minScore) {
+                os++;
+            } else {
+                minScore = score;
+                os = 1;
+            }
+        }
+
+        // 查询blog，并且使用field字段解决数据库查询的顺序问题
+        String StrIds = StrUtil.join(",", ids);
+        List<Blog> blogs = query().in("id", ids).last("order by field (id, " + StrIds + ")").list();
+
+        // 为每个blog添加其基本信息
+        for (Blog blog : blogs) {
+            User user = iUserService.getById(blog.getUserId());
+            blog.setName(user.getNickName());
+            blog.setIcon(user.getIcon());
+            isBlogLike(blog);
+        }
+
+        // 封装结果并返回
+        ScrollResult scrollResult = new ScrollResult();
+        scrollResult.setList(blogs);
+        scrollResult.setOffset(os);
+        scrollResult.setMinTime(minScore);
+        return Result.ok(scrollResult);
     }
 
     @Override
