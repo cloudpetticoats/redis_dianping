@@ -13,6 +13,7 @@ import com.hmdp.service.IUserService;
 import com.hmdp.utils.RegexUtils;
 import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.connection.BitFieldSubCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -20,6 +21,7 @@ import javax.annotation.Resource;
 import javax.servlet.http.HttpSession;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -96,6 +98,42 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         stringRedisTemplate.opsForValue().setBit(key, dayOfMonth - 1, true);
 
         return Result.ok();
+    }
+
+    @Override
+    public Result signCount() {
+        // 得到key
+        Long userId = UserHolder.getUser().getId();
+        LocalDateTime now = LocalDateTime.now();
+        String last = now.format(DateTimeFormatter.ofPattern(":yyyyMM"));
+        String key = "sign:" + userId + last;
+        int dayOfMonth = now.getDayOfMonth();
+
+        // 获取redis位图数据
+        List<Long> longs = stringRedisTemplate.opsForValue()
+                .bitField(key, BitFieldSubCommands.create()
+                        .get(BitFieldSubCommands.BitFieldType.unsigned(dayOfMonth))
+                        .valueAt(0)
+                );
+        if (longs == null || longs.isEmpty()) {
+            return Result.ok(0);
+        }
+        Long num = longs.get(0);
+        if (num == null || num == 0) {
+            return Result.ok(0);
+        }
+
+        // 遍历二进制位！！！
+        int count = 0;
+        while (true) {
+            if ((num & 1) == 1) {
+                count++;
+            } else {
+                break;
+            }
+            num >>>= 1;
+        }
+        return Result.ok(count);
     }
 
     private User createUserWithPhone(String phone) {
