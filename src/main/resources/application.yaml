@@ -20,6 +20,12 @@ spring:
         time-between-eviction-runs: 10s
   jackson:
     default-property-inclusion: non_null # JSON处理时忽略非空字段
+  rabbitmq:
+    host: 116.204.29.20
+    port: 5672
+    virtual-host: /seckill
+    username: admin
+    password: zhs20021018
 mybatis-plus:
   type-aliases-package: com.hmdp.entity # 别名扫描包
 logging:

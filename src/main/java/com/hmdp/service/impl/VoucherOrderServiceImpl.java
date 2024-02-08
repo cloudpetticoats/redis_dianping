@@ -10,6 +10,12 @@ import com.hmdp.utils.RedisIDWorker;
 import com.hmdp.utils.SimpleRedisLock;
 import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.core.ExchangeTypes;
+import org.springframework.amqp.rabbit.annotation.Exchange;
+import org.springframework.amqp.rabbit.annotation.Queue;
+import org.springframework.amqp.rabbit.annotation.QueueBinding;
+import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.aop.framework.AopContext;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -43,6 +49,8 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     private RedisIDWorker redisIDWorker;
     @Resource
     private StringRedisTemplate stringRedisTemplate;
+    @Resource
+    private RabbitTemplate rabbitTemplate;
 
     private final static DefaultRedisScript<Long> SECKILL_SCRIPT;
     static {
@@ -52,30 +60,46 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     }
 
     // 阻塞队列
-    private BlockingQueue<VoucherOrder> orderTasks = new ArrayBlockingQueue<>(1024 * 1024);
+    //private BlockingQueue<VoucherOrder> orderTasks = new ArrayBlockingQueue<>(1024 * 1024);
 
     // 线程池
-    private static final ExecutorService SECKILL_ORDER_EXECUTOR = Executors.newSingleThreadExecutor();
-    @PostConstruct
-    private void init() {
-        SECKILL_ORDER_EXECUTOR.submit(new VoucherOrderHandler());
-    }
-    private class VoucherOrderHandler implements Runnable {
+    //private static final ExecutorService SECKILL_ORDER_EXECUTOR = Executors.newSingleThreadExecutor();
+    //@PostConstruct
+    //private void init() {
+    //    SECKILL_ORDER_EXECUTOR.submit(new VoucherOrderHandler());
+    //}
+//    private class VoucherOrderHandler implements Runnable {
+//
+//        @Override
+//        public void run() {
+//            while (true) {
+//                try {
+//                    // 从阻塞队列中获取订单
+//                    VoucherOrder voucherOrder = orderTasks.take();
+//                    // 创建订单
+//                    handleVoucherOrder(voucherOrder);
+//                } catch (Exception e) {
+//                    log.error("创建订单时异常：", e);
+//                }
+//            }
+//        }
+//    }
 
-        @Override
-        public void run() {
-            while (true) {
-                try {
-                    // 从阻塞队列中获取订单
-                    VoucherOrder voucherOrder = orderTasks.take();
-                    // 创建订单
-                    handleVoucherOrder(voucherOrder);
-                } catch (Exception e) {
-                    log.error("创建订单时异常：", e);
-                }
-            }
+    @RabbitListener(bindings = @QueueBinding(
+            value = @Queue(name = "seckill.queue"),
+            exchange = @Exchange(name = "voucher.seckill", type = ExchangeTypes.DIRECT),
+            key = {"seckill"}
+    ))
+    public void listenDirectQueue(VoucherOrder voucherOrder){
+        log.info("seckill.queue------收到一条消息：" + voucherOrder);
+        try {
+            // 创建订单
+            handleVoucherOrder(voucherOrder);
+        } catch (Exception e) {
+            log.error("创建订单时异常：", e);
         }
     }
+
 
     private IVoucherOrderService proxy;
     private void handleVoucherOrder(VoucherOrder voucherOrder) {
@@ -119,7 +143,16 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         voucherOrder.setUserId(userId);
         // 设置代金券ID
         voucherOrder.setVoucherId(voucherId);
-        orderTasks.add(voucherOrder);
+
+        //orderTasks.add(voucherOrder);
+
+        // 发送消息到RabbitMQ
+        // 交换机名称
+        String exchangeName = "voucher.seckill";
+        // 发送消息，参数依次为：交换机名称，RoutingKey，消息
+        rabbitTemplate.convertAndSend(exchangeName, "seckill", voucherOrder);
+
+
 
         // 获取代理对象
         proxy = (IVoucherOrderService) AopContext.currentProxy();
